@@ -1,4 +1,4 @@
-"""Small, dependency-free viewer for Diagnostics JSONL sessions."""
+"""Diagnostics Viewer: view profiling sessions in a browser or terminal."""
 
 import argparse
 import json
@@ -176,7 +176,7 @@ def make_server(directory, fixed_file=None, port=0):
 def browser(directory, fixed_file, port, no_browser):
     with make_server(directory, fixed_file, port) as server:
         url = f"http://127.0.0.1:{server.server_port}/"
-        print(f"Diagnostics viewer: {url}\nSessions: {directory}\nCtrl+C stops the viewer.", flush=True)
+        print(f"Diagnostics Viewer: {url}\nSessions: {directory}\nCtrl+C stops the viewer.", flush=True)
         if not no_browser:
             webbrowser.open(url, new=1)
         try:

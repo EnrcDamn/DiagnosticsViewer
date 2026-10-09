@@ -26,7 +26,7 @@ if(Python3_Interpreter_FOUND)
     add_custom_target(diagnostics_viewer
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/Tools/diagnostics_viewer.py"
         USES_TERMINAL
-        COMMENT "Starting the Diagnostics viewer (Ctrl+C to stop)"
+        COMMENT "Starting Diagnostics Viewer (Ctrl+C to stop)"
         VERBATIM
     )
 endif()
