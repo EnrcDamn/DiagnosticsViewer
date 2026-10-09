@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagnostics</title>
+<style>
+  :root { color-scheme: dark; font: 13px system-ui, sans-serif; background: #202329; color: #dce2eb; }
+  body { max-width: 740px; margin: 20px auto; padding: 0 16px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  h1 { font-size: 15px; font-weight: 500; margin: 0; white-space: nowrap; }
+  select { min-width: 0; flex: 1; padding: 5px; background: #292d35; border: 1px solid #454b57; border-radius: 4px; }
+  #summary { font-size: 16px; margin-bottom: 5px; }
+  #details, #status, .legend { color: #9da9bb; font-size: 12px; }
+  .legend { margin: 12px 0 4px; }
+  .average { color: #76d6b9; } .peak { color: #e2bd6f; }
+  canvas { width: 100%; height: 130px; display: block; background: #16191e; border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-variant-numeric: tabular-nums; }
+  th { color: #9da9bb; font-weight: 400; font-size: 11px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #333944; }
+  th:first-child, td:first-child { text-align: left; }
+  #status { min-height: 18px; margin-bottom: 8px; }
+  pre { height: 120px; overflow: auto; margin: 0; padding: 10px; background: #16191e; border-radius: 4px;
+        white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 Consolas, monospace; }
+</style>
+<header><h1>Diagnostics</h1><select id="sessions" aria-label="Diagnostics session"></select></header>
+<div id="summary">Waiting for a diagnostics session…</div>
+<div id="details">Start an application with diagnostics enabled.</div>
+<div class="legend"><span class="average">Average load</span> / <span class="peak">peak load</span> · last 30 seconds</div>
+<canvas id="graph" aria-label="Block load history"></canvas>
+<table>
+  <thead><tr><th>Block scope</th><th>Self ms/block</th><th>Total ms/block</th><th>Calls/block</th></tr></thead>
+  <tbody id="scopes"></tbody>
+</table>
+<div id="status">Waiting for a session.</div>
+<pre id="logs" aria-label="Recent diagnostic logs"></pre>
+<script>
+  const element = id => document.getElementById(id);
+  let selected = '', offset = 0, closed = false, latest = null, lastUpdate = 0, lastScan = 0;
+  let history = [], logs = [];
+
+  function select(name) {
+    selected = name; offset = 0; closed = false; latest = null; lastUpdate = 0;
+    history = []; logs = [];
+    element('logs').textContent = ''; element('scopes').replaceChildren();
+    element('summary').textContent = 'Waiting for measurements…';
+    element('details').textContent = 'Start an application with diagnostics enabled.';
+    draw();
+  }
+  element('sessions').addEventListener('change', event => select(event.target.value));
+
+  async function scan() {
+    const response = await fetch('/api/sessions');
+    if (!response.ok) throw new Error('Session list unavailable');
+    const sessions = await response.json();
+    const selector = element('sessions');
+    selector.replaceChildren();
+    for (const session of sessions) {
+      const option = document.createElement('option');
+      option.value = session.name;
+      option.textContent = `${session.application || 'Application'} · PID ${session.pid ?? '?'} · #${session.instance ?? '?'} · ${session.name}`;
+      selector.append(option);
+    }
+    if (sessions.length && (!sessions.some(item => item.name === selected) ||
+                            (closed && sessions[0].name !== selected))) select(sessions[0].name);
+    if (selected) selector.value = selected;
+  }
+
+  function metrics(item) {
+    latest = item; lastUpdate = performance.now();
+    history.push([item.time, item.load, item.peak_load]);
+    history = history.filter(point => point[0] >= item.time - 30).slice(-120);
+    element('summary').textContent = `Block load ${item.load.toFixed(1)}% · peak ${item.peak_load.toFixed(1)}% · avg ${item.mean_ms.toFixed(3)} / p99 ${item.p99_ms.toFixed(3)} ms`;
+    const values = item.values || {};
+    element('details').textContent = Object.entries(values)
+      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join(' · ');
+    element('scopes').replaceChildren();
+    for (const [index, scope] of (item.scopes || []).entries()) {
+      const row = document.createElement('tr');
+      for (const text of [scope.name, scope.self_ms.toFixed(4), scope.total_ms.toFixed(4), scope.calls_per_block.toFixed(1)]) {
+        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
+      }
+      if (index) row.firstChild.style.paddingLeft = '22px';
+      element('scopes').append(row);
+    }
+    draw();
+  }
+
+  function draw() {
+    const canvas = element('graph'), ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth, height = canvas.clientHeight;
+    canvas.width = width * ratio; canvas.height = height * ratio;
+    const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio);
+    const left = 40, right = width - 10, top = 10, bottom = height - 12;
+    const scale = Math.max(100, ...history.map(point => point[2] * 1.1));
+    const y = value => bottom - value / scale * (bottom - top);
+    ctx.strokeStyle = '#8f454b'; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(left, y(100)); ctx.lineTo(right, y(100)); ctx.stroke();
+    ctx.fillStyle = '#d0878d'; ctx.font = '10px system-ui'; ctx.fillText('100%', 3, y(100) + 3);
+    ctx.setLineDash([]);
+    const end = history.length ? history.at(-1)[0] : 30;
+    for (const [column, color] of [[1, '#76d6b9'], [2, '#e2bd6f']]) {
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+      history.forEach((point, index) => {
+        const x = right - (end - point[0]) / 30 * (right - left);
+        if (index) ctx.lineTo(x, y(point[column])); else ctx.moveTo(x, y(point[column]));
+      });
+      ctx.stroke();
+    }
+  }
+  window.addEventListener('resize', draw);
+
+  async function tick() {
+    try {
+      const now = performance.now();
+      if (now - lastScan >= 1000 || !lastScan) { await scan(); lastScan = now; }
+      if (selected) {
+        const requestedSession = selected;
+        const response = await fetch(`/api/poll?session=${encodeURIComponent(requestedSession)}&offset=${offset}`);
+        if (!response.ok) throw new Error('Session unavailable');
+        const chunk = await response.json();
+        if (requestedSession !== selected) { setTimeout(tick, 0); return; }
+        if (chunk.reset) select(selected);
+        offset = chunk.offset;
+        for (const item of chunk.records) {
+          if (item.type === 'metrics') metrics(item);
+          else if (item.type === 'log') logs.push(`${item.time.toFixed(2).padStart(8)}s [${item.level}] ${item.text}`);
+          else if (item.type === 'closed') closed = true;
+        }
+        logs = logs.slice(-200);
+        const log = element('logs');
+        const follow = log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+        log.textContent = logs.join('\n');
+        if (follow) log.scrollTop = log.scrollHeight;
+        let status = closed ? 'Closed' : (now - lastUpdate > 3000 ? 'Writer inactive' :
+                     (!latest || latest.blocks === 0 ? 'Idle' : 'Live'));
+        if (latest) status += ` · max ${latest.lifetime_peak_ms.toFixed(3)} ms · over budget ${latest.over_budget} · dropped blocks/logs ${latest.dropped_blocks}/${latest.dropped_logs}`;
+        element('status').textContent = status;
+      }
+    } catch (error) { element('status').textContent = `Waiting: ${error.message}`; }
+    setTimeout(tick, 200);
+  }
+  draw(); tick();
+</script>
+</html>
