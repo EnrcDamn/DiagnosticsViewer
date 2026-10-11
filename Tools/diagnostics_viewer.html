@@ -44,12 +44,12 @@
   const element = id => document.getElementById(id);
   let selected = '', offset = 0, closed = false, latest = null, lastUpdate = 0, lastScan = 0;
   let history = [], logs = [];
-  const expandedScopes = new Set(), scopeRows = new Map();
+  const expandedScopes = new Set(), executedScopes = new Set(), scopeRows = new Map();
 
   function select(name) {
     selected = name; offset = 0; closed = false; latest = null; lastUpdate = 0;
     history = []; logs = [];
-    expandedScopes.clear(); scopeRows.clear();
+    expandedScopes.clear(); executedScopes.clear(); scopeRows.clear();
     element('logs').textContent = ''; element('scopes').replaceChildren();
     element('summary').textContent = 'Waiting for measurements…';
     element('details').textContent = 'Start an application with diagnostics enabled.';
@@ -89,11 +89,15 @@
   function renderScopes() {
     const table = element('scopes');
     const nodes = (latest?.scopes || []).map((scope, index) => {
+      const id = scope.id ?? index;
+      // Recorded parents and total_blocks preserve execution evidence in idle sessions.
+      if (scope.calls_per_block > 0 || scope.parents?.length > 0 ||
+          (id === 0 && latest.total_blocks > 0)) executedScopes.add(id);
       // Older recordings only distinguish the whole block from its inner scopes.
       const parents = scope.parents ?? (index ? [0] : []);
-      return { scope, id: scope.id ?? index, parent: parents.length === 1 ? parents[0] : null,
+      return { scope, id, parent: parents.length === 1 ? parents[0] : null,
                children: [], shared: parents.length > 1 };
-    });
+    }).filter(node => executedScopes.has(node.id));
     const byId = new Map(nodes.map(node => [node.id, node]));
     for (const node of nodes) {
       const ancestors = new Set([node.id]);
