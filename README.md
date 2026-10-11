@@ -13,8 +13,7 @@ python Tools/diagnostics_viewer.py
 ```
 
 Choose a session from the dropdown when several applications are running.
-Block scopes start collapsed. Use the `+` and `−` buttons beside a scope to show
-or hide its children; your choices are kept while that session updates.
+Block scopes start collapsed. 
 Press Ctrl+C in the terminal to stop the viewer. Add `--terminal` for a terminal
 display, or `--help` to see other options.
 
@@ -116,7 +115,7 @@ For audio, set `budgetMs` to `1000 * actualBlockSize / sampleRate`. For renderin
 use the time allowed for one frame in milliseconds. Average load compares total
 block time with total budget time, so changing block sizes is supported.
 
-The graph shows average and peak (highest) load; the red line marks 100%.
+The graph shows average and peak (highest) load; the red line marks 100%.S
 **P99** is a block time that about 99% of sampled blocks stay below. Peak and P99
 cover the latest update. The status bar keeps the session's highest block time
 and total count of over-budget blocks. For audio, this count cannot tell you how

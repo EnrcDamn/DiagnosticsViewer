@@ -108,7 +108,8 @@ void timingAndShutdown()
             "Inner scope was not attached to its actual parent");
     require(number(text, "total_blocks") == 3, "Shutdown lost queued callbacks");
     require(number(text, "over_budget") == 3, "Over-budget callbacks not counted");
-    require(number(text, "load") > 100, "Load must not be clamped at 100 percent");
+    require(number(scopeRecord(text, "callback"), "load") > 100,
+            "Load must not be clamped at 100 percent");
     require(number(text, "p99_ms") >= 2, "P99 failed to include the slow callbacks");
     require(number(text, "block_size") == 130, "Actual block metadata was lost");
     require(number(text, "state") == 42, "Block value updates were lost");
@@ -206,7 +207,12 @@ void invalidAndEmptyBlocks()
         block.setValue(maxValues, 123);
     }
     const auto text = read(file);
-    require(number(text, "load") == 0, "Unknown budget should not divide by zero");
+    for (const auto* name : { "callback", "outer", "inner" })
+    {
+        const auto record = scopeRecord(text, name);
+        require(number(record, "load") == 0 && number(record, "peak_load") == 0,
+                "Unknown budget should not divide by zero");
+    }
     require(number(text, "block_size") == 0 && number(text, "state") == 0,
             "Non-finite values reached JSON output");
 }
@@ -277,6 +283,67 @@ void sharedScopeParents()
     require(number(record, "calls_per_block") == 2,
             "Shared scope timings should still combine both calls");
 }
+
+void scopeLoadsAndIdleReports()
+{
+    auto settings = config("Scope load test");
+    settings.scopes.push_back("unused");
+    std::filesystem::path file;
+    {
+        Session session(settings);
+        file = session.file();
+        {
+            BlockInfo info;
+            info.budgetMs = 2.0;
+            Block block(session, info);
+            for (int call = 0; call < 2; ++call)
+            {
+                Scope outer(block, 1);
+                Scope inner(block, 2);
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        {
+            BlockInfo info;
+            info.budgetMs = 8.0;
+            Block block(session, info);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    }
+    const auto text = read(file);
+    const auto start = text.find("{\"type\":\"metrics\"");
+    const auto measured = text.substr(start, text.find('\n', start) - start);
+    const auto global = measured.substr(0, measured.find(",\"scopes\":"));
+    require(number(global, "blocks") == 2, "Scope load test needs both block budgets");
+    const auto root = scopeRecord(measured, "callback");
+    require(std::abs(number(root, "load") - number(global, "load")) < 0.00001,
+            "Whole-block scope average differs from the global average");
+    require(std::abs(number(root, "peak_load") - number(global, "peak_load")) < 0.00001,
+            "Whole-block scope peak differs from the global peak");
+    for (const auto* name : { "outer", "inner" })
+    {
+        const auto record = scopeRecord(measured, name);
+        const auto average = number(record, "load");
+        const auto peak = number(record, "peak_load");
+        const auto total = number(record, "total_ms");
+        require(total > 0 && number(record, "calls_per_block") == 1,
+                "Scope load test must include two calls in one block and an inactive block");
+        require(std::abs(average - 100.0 * total * 2.0 / 10.0) < 0.00001,
+                "Scope average did not use the sum of changing block budgets");
+        require(std::abs(peak - 100.0 * total * 2.0 / 2.0) < 0.00001,
+                "Scope peak did not combine calls within each block before applying its budget");
+    }
+    const auto unused = scopeRecord(measured, "unused");
+    require(number(unused, "load") == 0 && number(unused, "peak_load") == 0,
+            "Unexecuted scope should have zero load");
+    require(number(text, "blocks") == 0, "Scope load test must include idle reports");
+    for (const auto& name : settings.scopes)
+    {
+        const auto record = scopeRecord(text, name);
+        require(number(record, "load") == 0 && number(record, "peak_load") == 0,
+                "Idle reports retained stale scope loads");
+    }
+}
 } // namespace
 
 int main()
@@ -289,6 +356,7 @@ int main()
         invalidAndEmptyBlocks();
         hierarchyAndDepthLimit();
         sharedScopeParents();
+        scopeLoadsAndIdleReports();
         std::cout << "Diagnostics tests passed" << std::endl;
         return 0;
     }

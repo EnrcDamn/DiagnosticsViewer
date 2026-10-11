@@ -36,8 +36,17 @@ class Element {
   setAttribute(name, value) { this.attributes[name] = value; }
   click() { this.listeners.click(); }
   getContext() {
-    return Object.fromEntries(['scale', 'setLineDash', 'beginPath', 'moveTo', 'lineTo', 'stroke', 'fillText']
-      .map(name => [name, () => {}]));
+    this.context = {
+      strokes: [], path: [], dash: [], globalAlpha: 1,
+      scale() {}, fillText() {},
+      setLineDash(value) { this.dash = [...value]; },
+      beginPath() { this.path = []; },
+      moveTo(x, y) { this.path.push(['move', x, y]); },
+      lineTo(x, y) { this.path.push(['line', x, y]); },
+      stroke() { this.strokes.push({ color: this.strokeStyle, alpha: this.globalAlpha,
+        dash: [...this.dash], path: [...this.path] }); },
+    };
+    return this.context;
   }
 }
 
@@ -62,6 +71,9 @@ function viewer() {
     visible() { return this.rows().filter(row => !row.hidden).map(row => row.firstChild.children[1].textContent); },
     row(name) { return this.rows().find(row => row.firstChild.children[1].textContent === name); },
     button(name) { return this.row(name).firstChild.children[0].firstChild; },
+    scopeButton(name) { return this.row(name).firstChild.children[1]; },
+    element: id => document.getElementById(id),
+    traces() { return this.element('graph').context.strokes.slice(1); },
   };
 }
 
@@ -208,4 +220,105 @@ test('recursive parent relationships do not create cycles and removed scopes lea
   page.update([scope(0, 'block', [])]);
   assert.equal(page.rows().length, 1);
   assert.equal(page.button('block').hidden, true);
+});
+
+const loadedScopes = (average = 20, peak = 40) => [
+  { ...scope(0, 'block', []), load: 50, peak_load: 80 },
+  { ...scope(1, 'function', [0]), load: average, peak_load: peak },
+  { ...scope(2, 'other', [0]), load: 10, peak_load: 15 },
+];
+const redTrace = (page, peak = false) => page.traces().find(trace => trace.color === (peak ? '#ffabb1' : '#f06d76'));
+const plotY = load => 118 - load / 100 * 108;
+
+test('selecting a function draws its red average and dashed peak while fading the global graph', () => {
+  const page = viewer();
+  page.update(loadedScopes(), { time: 1, load: 50, peak_load: 80 });
+  page.update(loadedScopes(30, 60), { time: 2, load: 50, peak_load: 80 });
+  page.button('block').click(); page.scopeButton('function').click();
+  assert.equal(page.scopeButton('function').tagName, 'button');
+  assert.equal(page.scopeButton('function').attributes['aria-pressed'], 'true');
+  assert.equal(page.scopeButton('other').attributes['aria-pressed'], 'false');
+  assert.equal(page.row('function').className, 'scope-selected');
+  assert.deepEqual(page.traces().slice(0, 2).map(trace => trace.alpha), [0.25, 0.25]);
+  assert.deepEqual(redTrace(page).path.map(point => point[2]), [plotY(20), plotY(30)]);
+  assert.deepEqual(redTrace(page, true).path.map(point => point[2]), [plotY(40), plotY(60)]);
+  assert.deepEqual(redTrace(page, true).dash, [5, 3]);
+  assert.equal(redTrace(page).alpha, 1);
+  assert.equal(page.element('graph-scope').textContent, 'function');
+  assert.match(page.element('scope-details').textContent, /Average 30.0% · peak 60.0%/);
+  assert.match(page.element('graph').attributes['aria-label'], /function and block/);
+
+  page.scopeButton('other').click();
+  assert.equal(page.scopeButton('function').attributes['aria-pressed'], 'false');
+  assert.equal(page.scopeButton('other').attributes['aria-pressed'], 'true');
+  assert.equal(page.element('graph-scope').textContent, 'other');
+  page.element('clear-scope').click();
+  assert.deepEqual(page.traces().map(trace => trace.alpha), [1, 1]);
+  assert.equal(page.element('scope-legend').hidden, true);
+  assert.equal(page.element('clear-scope').hidden, true);
+  page.scopeButton('function').click(); page.scopeButton('function').click();
+  assert.equal(page.traces().length, 2);
+});
+
+test('selection survives updates and collapsed parents, and clears on removal or session reset', () => {
+  const page = viewer(); page.select('first');
+  page.update(loadedScopes()); page.button('block').click(); page.scopeButton('function').click();
+  page.button('block').click();
+  assert.equal(page.row('function').hidden, true);
+  assert.equal(page.element('graph-scope').textContent, 'function');
+  const inactive = loadedScopes().map(record => ({ ...idle(record), load: 0, peak_load: 0 }));
+  page.update(inactive);
+  assert.equal(page.scopeButton('function').attributes['aria-pressed'], 'true');
+  assert.match(page.element('scope-details').textContent, /Average 0.0% · peak 0.0%/);
+  page.update([loadedScopes()[0]]);
+  assert.equal(page.element('scope-legend').hidden, true);
+  assert.equal(page.traces().length, 2);
+  page.update(loadedScopes()); page.button('block').click(); page.scopeButton('function').click();
+  page.select('first'); page.update(loadedScopes());
+  assert.equal(page.scopeButton('function').attributes['aria-pressed'], 'false');
+  assert.equal(page.traces()[0].path.length, 1);
+  page.button('block').click(); page.scopeButton('function').click(); page.select('second');
+  assert.equal(page.element('scope-legend').hidden, true);
+  assert.equal(page.traces()[0].path.length, 0);
+});
+
+test('legacy scope graphs derive an average from the block budget and leave unavailable peaks blank', () => {
+  const page = viewer();
+  const legacy = [scope(0, 'block', [], 2), scope(1, 'function', [0], 0.5)]
+    .map(({ id, parents, ...record }) => record);
+  page.update(legacy, { load: 50, peak_load: 80, mean_ms: 2 });
+  page.button('block').click(); page.scopeButton('function').click();
+  assert.equal(redTrace(page).path[0][2], plotY(12.5));
+  assert.equal(redTrace(page, true).path.length, 0);
+  assert.match(page.element('scope-details').textContent, /peak unavailable in this recording/);
+  page.update(legacy, { load: 0, peak_load: 0, mean_ms: 0 });
+  assert.equal(redTrace(page).path.at(-1)[2], plotY(0));
+  page.scopeButton('block').click();
+  assert.match(page.element('scope-details').textContent, /peak 0.0%/);
+});
+
+test('scope history follows IDs across reordering and breaks lines at missing data', () => {
+  const page = viewer();
+  page.update(loadedScopes(10, 20), { time: 1 });
+  page.update(loadedScopes(20, 30).filter(record => record.id !== 1), { time: 2 });
+  page.update(loadedScopes(30, 40).reverse(), { time: 3 });
+  page.button('block').click(); page.scopeButton('function').click();
+  assert.deepEqual(redTrace(page).path.map(point => point[0]), ['move', 'move']);
+  assert.deepEqual(redTrace(page).path.map(point => point[2]), [plotY(10), plotY(30)]);
+  page.update(loadedScopes(40, 50), { time: 4 });
+  assert.deepEqual(redTrace(page).path.map(point => point[0]), ['move', 'move', 'line']);
+});
+
+test('graph scales for scope loads above 100 percent and bounds the retained history', () => {
+  const page = viewer();
+  page.update(loadedScopes(150, 250), { time: 0 });
+  page.button('block').click(); page.scopeButton('function').click();
+  assert.ok(redTrace(page, true).path[0][2] >= 10);
+  assert.match(page.element('scope-details').textContent, /peak 250.0%/);
+  for (let index = 1; index <= 125; ++index)
+    page.update(loadedScopes(), { time: index / 10 });
+  assert.equal(redTrace(page).path.length, 120);
+  page.update(loadedScopes(30, 40), { time: 50 });
+  assert.equal(redTrace(page).path.length, 1);
+  assert.equal(redTrace(page).path[0][2], plotY(30));
 });

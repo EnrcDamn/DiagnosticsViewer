@@ -237,6 +237,9 @@ struct Window
             scopes[i].selfMs += sample.scopes[i].selfMs;
             scopes[i].calls += sample.scopes[i].calls;
             scopes[i].parents |= sample.scopes[i].parents;
+            if (sample.info.budgetMs > 0.0)
+                scopePeakLoads[i] = std::max(scopePeakLoads[i],
+                    100.0 * sample.scopes[i].totalMs / sample.info.budgetMs);
         }
     }
 
@@ -254,6 +257,7 @@ struct Window
     double totalMs = 0.0, peakMs = 0.0, budgetMs = 0.0, peakLoad = 0.0;
     BlockInfo last;
     std::array<ScopeStats, maxScopes> scopes {};
+    std::array<double, maxScopes> scopePeakLoads {};
     std::array<double, percentileCapacity> durations {};
 };
 } // namespace
@@ -374,6 +378,9 @@ struct Session::Impl
             quoted(output, config.scopes[i]);
             output << ",\"self_ms\":" << (window.count ? scope.selfMs / window.count : 0.0)
                    << ",\"total_ms\":" << (window.count ? scope.totalMs / window.count : 0.0)
+                   << ",\"load\":" << (window.budgetMs > 0.0
+                            ? 100.0 * scope.totalMs / window.budgetMs : 0.0)
+                   << ",\"peak_load\":" << window.scopePeakLoads[i]
                    << ",\"calls_per_block\":" << (window.count
                             ? static_cast<double>(scope.calls) / window.count : 0.0) << '}';
         }

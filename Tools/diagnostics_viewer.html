@@ -11,19 +11,30 @@
   h2 { font-size: 13px; font-weight: 500; margin: 12px 0 4px; }
   select { min-width: 0; flex: 1; padding: 5px; background: #292d35; border: 1px solid #454b57; border-radius: 4px; }
   #summary { font-size: 16px; margin-bottom: 5px; }
-  #details, #status, .legend { color: #9da9bb; font-size: 12px; }
+  #details, #status, #scope-details, .legend { color: #9da9bb; font-size: 12px; }
   #details { white-space: pre-wrap; line-height: 1.6; }
   .legend { margin: 12px 0 4px; }
   .average { color: #76d6b9; } .peak { color: #e2bd6f; }
+  .scope-average { color: #f06d76; } .scope-peak { color: #ffabb1; }
+  #scope-legend { margin-left: 10px; }
+  #scope-details { margin: 0 0 4px; }
+  #clear-scope { margin-left: 8px; padding: 2px 6px; font: inherit; color: inherit;
+                 background: #292d35; border: 1px solid #454b57; border-radius: 3px; cursor: pointer; }
   canvas { width: 100%; height: 130px; display: block; background: #16191e; border-radius: 4px; }
   table { width: 100%; border-collapse: collapse; margin: 12px 0; font-variant-numeric: tabular-nums; }
   th { color: #9da9bb; font-weight: 400; font-size: 11px; }
   th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #333944; }
   th:first-child, td:first-child { text-align: left; }
   .scope-control { display: inline-block; width: 20px; }
+  .scope-select { padding: 0; font: inherit; color: inherit; background: transparent;
+                  border: 0; text-align: left; cursor: pointer; }
+  .scope-select:hover { color: #ffabb1; }
+  .scope-selected { background: #38282e; }
+  .scope-selected .scope-select { color: #ffabb1; }
   .scope-toggle { width: 16px; height: 16px; padding: 0; line-height: 12px; cursor: pointer;
                   color: inherit; background: #292d35; border: 1px solid #454b57; border-radius: 3px; }
-  .scope-toggle:focus-visible { outline: 2px solid #76d6b9; outline-offset: 2px; }
+  .scope-toggle:focus-visible, .scope-select:focus-visible, #clear-scope:focus-visible {
+    outline: 2px solid #76d6b9; outline-offset: 2px; }
   #status { min-height: 18px; margin-bottom: 8px; }
   pre { height: 120px; overflow: auto; margin: 0; padding: 10px; background: #16191e; border-radius: 4px;
         white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 Consolas, monospace; }
@@ -32,7 +43,13 @@
 <div id="summary">Waiting for a diagnostics session…</div>
 <h2>Live states</h2>
 <div id="details">Start an application with diagnostics enabled.</div>
-<div class="legend"><span class="average">Average load</span> / <span class="peak">peak load</span> · last 30 seconds</div>
+<div class="legend">
+  <span id="global-legend"><span class="average">Block average load</span> / <span class="peak">peak load</span></span>
+  <span id="scope-legend" hidden><span id="graph-scope"></span>:
+    <span class="scope-average">average</span> / <span class="scope-peak">peak (dashed)</span></span>
+  · last 30 seconds <button id="clear-scope" type="button" hidden>Whole block</button>
+</div>
+<div id="scope-details" hidden></div>
 <canvas id="graph" aria-label="Block load history"></canvas>
 <table>
   <thead><tr><th>Block scope</th><th>Self ms/block</th><th>Total ms/block</th><th>Calls/block</th></tr></thead>
@@ -44,11 +61,13 @@
   const element = id => document.getElementById(id);
   let selected = '', offset = 0, closed = false, latest = null, lastUpdate = 0, lastScan = 0;
   let history = [], logs = [];
+  let selectedScopeId = null;
   const expandedScopes = new Set(), executedScopes = new Set(), scopeRows = new Map();
 
   function select(name) {
     selected = name; offset = 0; closed = false; latest = null; lastUpdate = 0;
     history = []; logs = [];
+    selectedScopeId = null;
     expandedScopes.clear(); executedScopes.clear(); scopeRows.clear();
     element('logs').textContent = ''; element('scopes').replaceChildren();
     element('summary').textContent = 'Waiting for measurements…';
@@ -56,6 +75,23 @@
     draw();
   }
   element('sessions').addEventListener('change', event => select(event.target.value));
+  element('clear-scope').addEventListener('click', () => selectScope(null));
+
+  function selectScope(id) {
+    selectedScopeId = id;
+    renderScopes(); draw();
+  }
+
+  function scopeLoads(item) {
+    return new Map((item.scopes || []).map((scope, index) => {
+      const id = scope.id ?? index;
+      // Older recordings allow an exact average from the whole block's budget ratio.
+      const average = scope.load ?? (id === 0 ? item.load :
+        (item.mean_ms > 0 ? item.load * scope.total_ms / item.mean_ms : 0));
+      const peak = scope.peak_load ?? (id === 0 ? item.peak_load : null);
+      return [id, { average, peak }];
+    }));
+  }
 
   async function scan() {
     const response = await fetch('/api/sessions');
@@ -76,8 +112,8 @@
 
   function metrics(item) {
     latest = item; lastUpdate = performance.now();
-    history.push([item.time, item.load, item.peak_load]);
-    history = history.filter(point => point[0] >= item.time - 30).slice(-120);
+    history.push({ time: item.time, average: item.load, peak: item.peak_load, scopes: scopeLoads(item) });
+    history = history.filter(point => point.time >= item.time - 30).slice(-120);
     element('summary').textContent = `Block load ${item.load.toFixed(1)}% · peak ${item.peak_load.toFixed(1)}% · avg ${item.mean_ms.toFixed(3)} / p99 ${item.p99_ms.toFixed(3)} ms`;
     const values = item.values || {};
     element('details').textContent = Object.entries(values)
@@ -99,6 +135,7 @@
                children: [], shared: parents.length > 1 };
     }).filter(node => executedScopes.has(node.id));
     const byId = new Map(nodes.map(node => [node.id, node]));
+    if (!byId.has(selectedScopeId)) selectedScopeId = null;
     for (const node of nodes) {
       const ancestors = new Set([node.id]);
       let parent = byId.get(node.parent);
@@ -129,7 +166,9 @@
           if (expandedScopes.has(node.id)) expandedScopes.delete(node.id); else expandedScopes.add(node.id);
           renderScopes();
         });
-        const label = document.createElement('span');
+        const label = document.createElement('button');
+        label.className = 'scope-select'; label.type = 'button';
+        label.addEventListener('click', () => selectScope(selectedScopeId === node.id ? null : node.id));
         control.append(toggle); nameCell.append(control, label); row.append(nameCell);
         const cells = Array.from({ length: 3 }, () => document.createElement('td'));
         row.append(...cells);
@@ -137,9 +176,12 @@
       }
       const expanded = expandedScopes.has(node.id);
       entry.row.hidden = !visible;
+      entry.row.className = selectedScopeId === node.id ? 'scope-selected' : '';
       entry.nameCell.style.paddingLeft = `${8 + depth * 18}px`;
       entry.label.textContent = node.scope.name;
       entry.label.title = node.shared ? 'Timings combined across multiple parents.' : '';
+      entry.label.setAttribute('aria-pressed', String(selectedScopeId === node.id));
+      entry.label.setAttribute('aria-label', `View load history for ${node.scope.name}`);
       entry.toggle.hidden = node.children.length === 0;
       entry.toggle.textContent = expanded ? '−' : '+';
       entry.toggle.setAttribute('aria-expanded', String(expanded));
@@ -155,25 +197,55 @@
 
   function draw() {
     const canvas = element('graph'), ratio = window.devicePixelRatio || 1;
+    const scope = (latest?.scopes || []).find((scope, index) => (scope.id ?? index) === selectedScopeId);
+    const focused = selectedScopeId !== null && !!scope;
+    element('global-legend').style.opacity = focused ? '0.35' : '1';
+    element('scope-legend').hidden = !focused;
+    element('clear-scope').hidden = !focused;
+    element('scope-details').hidden = !focused;
+    element('graph-scope').textContent = scope?.name || '';
+    canvas.setAttribute('aria-label', focused ? `${scope.name} and block load history` : 'Block load history');
+    if (focused) {
+      const loads = history.at(-1)?.scopes.get(selectedScopeId);
+      const format = value => Number.isFinite(value) ? `${value.toFixed(1)}%` : 'unavailable in this recording';
+      element('scope-details').textContent = `Average ${format(loads?.average)} · peak ${format(loads?.peak)} · total including children`;
+    } else element('scope-details').textContent = '';
     const width = canvas.clientWidth, height = canvas.clientHeight;
     canvas.width = width * ratio; canvas.height = height * ratio;
     const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio);
     const left = 40, right = width - 10, top = 10, bottom = height - 12;
-    const scale = Math.max(100, ...history.map(point => point[2] * 1.1));
+    const series = [
+      { value: point => point.average, color: '#76d6b9', alpha: focused ? 0.25 : 1 },
+      { value: point => point.peak, color: '#e2bd6f', alpha: focused ? 0.25 : 1 },
+    ];
+    if (focused) series.push(
+      { value: point => point.scopes.get(selectedScopeId)?.average, color: '#f06d76', alpha: 1 },
+      { value: point => point.scopes.get(selectedScopeId)?.peak, color: '#ffabb1', alpha: 1, dashed: true });
+    const scale = Math.max(100, ...series.flatMap(trace => history.map(point => {
+      const value = trace.value(point);
+      return Number.isFinite(value) ? value * 1.1 : 0;
+    })));
     const y = value => bottom - value / scale * (bottom - top);
     ctx.strokeStyle = '#8f454b'; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(left, y(100)); ctx.lineTo(right, y(100)); ctx.stroke();
     ctx.fillStyle = '#d0878d'; ctx.font = '10px system-ui'; ctx.fillText('100%', 3, y(100) + 3);
     ctx.setLineDash([]);
-    const end = history.length ? history.at(-1)[0] : 30;
-    for (const [column, color] of [[1, '#76d6b9'], [2, '#e2bd6f']]) {
-      ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
-      history.forEach((point, index) => {
-        const x = right - (end - point[0]) / 30 * (right - left);
-        if (index) ctx.lineTo(x, y(point[column])); else ctx.moveTo(x, y(point[column]));
+    const end = history.length ? history.at(-1).time : 30;
+    for (const trace of series) {
+      ctx.strokeStyle = trace.color; ctx.globalAlpha = trace.alpha;
+      ctx.lineWidth = focused && trace.alpha === 1 ? 2 : 1.5;
+      ctx.setLineDash(trace.dashed ? [5, 3] : []); ctx.beginPath();
+      let connected = false;
+      history.forEach(point => {
+        const value = trace.value(point);
+        if (!Number.isFinite(value)) { connected = false; return; }
+        const x = right - (end - point.time) / 30 * (right - left);
+        if (connected) ctx.lineTo(x, y(value)); else ctx.moveTo(x, y(value));
+        connected = true;
       });
       ctx.stroke();
     }
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
   }
   window.addEventListener('resize', draw);
 
