@@ -8,9 +8,11 @@
   body { max-width: 740px; margin: 20px auto; padding: 0 16px; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
   h1 { font-size: 15px; font-weight: 500; margin: 0; white-space: nowrap; }
+  h2 { font-size: 13px; font-weight: 500; margin: 12px 0 4px; }
   select { min-width: 0; flex: 1; padding: 5px; background: #292d35; border: 1px solid #454b57; border-radius: 4px; }
   #summary { font-size: 16px; margin-bottom: 5px; }
   #details, #status, .legend { color: #9da9bb; font-size: 12px; }
+  #details { white-space: pre-wrap; line-height: 1.6; }
   .legend { margin: 12px 0 4px; }
   .average { color: #76d6b9; } .peak { color: #e2bd6f; }
   canvas { width: 100%; height: 130px; display: block; background: #16191e; border-radius: 4px; }
@@ -24,6 +26,7 @@
 </style>
 <header><h1>Diagnostics Viewer</h1><select id="sessions" aria-label="Diagnostics Viewer session"></select></header>
 <div id="summary">Waiting for a diagnostics session…</div>
+<h2>Live states</h2>
 <div id="details">Start an application with diagnostics enabled.</div>
 <div class="legend"><span class="average">Average load</span> / <span class="peak">peak load</span> · last 30 seconds</div>
 <canvas id="graph" aria-label="Block load history"></canvas>
@@ -72,7 +75,7 @@
     element('summary').textContent = `Block load ${item.load.toFixed(1)}% · peak ${item.peak_load.toFixed(1)}% · avg ${item.mean_ms.toFixed(3)} / p99 ${item.p99_ms.toFixed(3)} ms`;
     const values = item.values || {};
     element('details').textContent = Object.entries(values)
-      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join(' · ');
+      .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join('\n');
     element('scopes').replaceChildren();
     for (const [index, scope] of (item.scopes || []).entries()) {
       const row = document.createElement('tr');
