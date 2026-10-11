@@ -77,6 +77,20 @@ std::string scopeRecord(const std::string& text, const std::string& name)
     return text.substr(start, text.find('}', position) - start + 1);
 }
 
+void chronologicalSessionNames()
+{
+    std::string previous;
+    // Cross instance 9 -> 10: sorting must follow creation time, not instance digits.
+    for (int instance = 0; instance < 12; ++instance)
+    {
+        Session session(config("Filename test"));
+        const auto filename = session.file().filename().string();
+        require(previous.empty() || previous < filename,
+                "Session filenames did not sort in creation order");
+        previous = filename;
+    }
+}
+
 void timingAndShutdown()
 {
     std::filesystem::path file;
@@ -350,6 +364,7 @@ int main()
 {
     try
     {
+        chronologicalSessionNames();
         timingAndShutdown();
         realtimeAndOverflow();
         streamsAndMultipleInstances();

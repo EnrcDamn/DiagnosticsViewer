@@ -5,11 +5,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <locale>
 #include <mutex>
+#include <sstream>
 #include <streambuf>
 #include <thread>
 
@@ -278,15 +280,25 @@ struct Session::Impl
             std::filesystem::create_directories(directory, error);
         static std::atomic<std::size_t> nextId { 0 };
         const auto id = ++nextId;
+        const auto now = std::chrono::system_clock::now();
         const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+            now.time_since_epoch()).count();
+        const auto seconds = std::chrono::system_clock::to_time_t(
+            std::chrono::time_point_cast<std::chrono::seconds>(now));
+        std::tm localTime {};
        #if defined(_WIN32)
+        localtime_s(&localTime, &seconds);
         const auto pid = GetCurrentProcessId();
        #else
+        localtime_r(&seconds, &localTime);
         const auto pid = getpid();
        #endif
-        path = directory / ("session-" + std::to_string(pid) + "-" + std::to_string(id)
-                            + "-" + std::to_string(stamp) + ".jsonl");
+        std::ostringstream filename;
+        filename.imbue(std::locale::classic());
+        filename << "session-" << std::put_time(&localTime, "%Y-%m-%d_%H-%M-%S")
+                 << '.' << std::setfill('0') << std::setw(6) << stamp % 1000000
+                 << "-pid-" << pid << "-instance-" << id << ".jsonl";
+        path = directory / filename.str();
         if (!error)
             output.open(path, std::ios::binary);
         output.imbue(std::locale::classic());

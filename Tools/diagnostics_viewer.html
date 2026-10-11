@@ -6,6 +6,7 @@
 <style>
   :root { color-scheme: dark; font: 13px system-ui, sans-serif; background: #202329; color: #dce2eb; }
   body { max-width: 740px; margin: 20px auto; padding: 0 16px; }
+  #save-location { color: #9da9bb; font-size: 12px; margin-bottom: 8px; overflow-wrap: anywhere; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
   h1 { font-size: 15px; font-weight: 500; margin: 0; white-space: nowrap; }
   h2 { font-size: 13px; font-weight: 500; margin: 12px 0 4px; }
@@ -39,6 +40,7 @@
   pre { height: 120px; overflow: auto; margin: 0; padding: 10px; background: #16191e; border-radius: 4px;
         white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 Consolas, monospace; }
 </style>
+<div id="save-location" title="__SAVE_DIRECTORY_FULL__">Files saved at __SAVE_DIRECTORY__</div>
 <header><h1>Diagnostics Viewer</h1><select id="sessions" aria-label="Diagnostics Viewer session"></select></header>
 <div id="summary">Waiting for a diagnostics session…</div>
 <h2>Live states</h2>

@@ -2,6 +2,7 @@
 
 import argparse
 import json
+from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import sys
@@ -53,8 +54,9 @@ class TailReader:
 
 def session_paths(directory):
     try:
-        return sorted(directory.glob("session-*.jsonl"),
-                      key=lambda path: path.stem.rsplit("-", 1)[-1], reverse=True)[:100]
+        # The date and time prefix makes filename order chronological.
+        return sorted(directory.glob("session-*-pid-*-instance-*.jsonl"),
+                      key=lambda path: path.name, reverse=True)[:100]
     except OSError:
         return []
 
@@ -122,8 +124,13 @@ def read_chunk(path, offset):
 
 
 def make_server(directory, fixed_file=None, port=0):
-    page = Path(__file__).with_suffix(".html").read_bytes()
     directory = directory.resolve()
+    saved_directory = fixed_file.resolve().parent if fixed_file else directory
+    label = ("%TEMP%/Diagnostics" if sys.platform == "win32" and
+             saved_directory == DEFAULT_DIRECTORY.resolve() else str(saved_directory))
+    page = Path(__file__).with_suffix(".html").read_bytes()
+    page = page.replace(b"__SAVE_DIRECTORY_FULL__", escape(str(saved_directory)).encode("utf-8"))
+    page = page.replace(b"__SAVE_DIRECTORY__", escape(label).encode("utf-8"))
 
     def allowed_paths():
         if fixed_file:

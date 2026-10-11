@@ -90,8 +90,8 @@ Scope zero covers the whole block. Other scopes measure work inside it.
 
 ```text
 block (scope 0): 10 ms total
-`-- process (scope 1): 7 ms total
-    `-- filter (scope 2): 2 ms total
+└── process (scope 1): 7 ms total
+    └── filter (scope 2): 2 ms total
 ```
 
 | Scope | Total time | Self time |
