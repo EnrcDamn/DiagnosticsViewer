@@ -38,6 +38,8 @@ struct ScopeStats
     double totalMs = 0.0;
     double selfMs = 0.0;
     std::uint32_t calls = 0;
+    // Bit i records that this scope ran directly inside scope i.
+    std::uint8_t parents = 0;
 };
 
 struct Sample

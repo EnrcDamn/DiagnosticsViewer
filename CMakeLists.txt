@@ -43,6 +43,13 @@ if(DIAGNOSTICS_BUILD_TESTS)
                 -s "${CMAKE_CURRENT_SOURCE_DIR}/Tools" -p test_diagnostics_viewer.py
         )
     endif()
+    find_program(DIAGNOSTICS_NODE_EXECUTABLE NAMES node nodejs)
+    if(DIAGNOSTICS_NODE_EXECUTABLE)
+        add_test(NAME diagnostics_viewer_tree_tests
+            COMMAND "${DIAGNOSTICS_NODE_EXECUTABLE}" --test
+                "${CMAKE_CURRENT_SOURCE_DIR}/Tools/test_diagnostics_viewer.cjs"
+        )
+    endif()
 endif()
 
 set(diagnostics_package_directory "${CMAKE_INSTALL_LIBDIR}/cmake/Diagnostics")

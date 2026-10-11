@@ -20,6 +20,10 @@
   th { color: #9da9bb; font-weight: 400; font-size: 11px; }
   th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #333944; }
   th:first-child, td:first-child { text-align: left; }
+  .scope-control { display: inline-block; width: 20px; }
+  .scope-toggle { width: 16px; height: 16px; padding: 0; line-height: 12px; cursor: pointer;
+                  color: inherit; background: #292d35; border: 1px solid #454b57; border-radius: 3px; }
+  .scope-toggle:focus-visible { outline: 2px solid #76d6b9; outline-offset: 2px; }
   #status { min-height: 18px; margin-bottom: 8px; }
   pre { height: 120px; overflow: auto; margin: 0; padding: 10px; background: #16191e; border-radius: 4px;
         white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.6 Consolas, monospace; }
@@ -40,10 +44,12 @@
   const element = id => document.getElementById(id);
   let selected = '', offset = 0, closed = false, latest = null, lastUpdate = 0, lastScan = 0;
   let history = [], logs = [];
+  const expandedScopes = new Set(), scopeRows = new Map();
 
   function select(name) {
     selected = name; offset = 0; closed = false; latest = null; lastUpdate = 0;
     history = []; logs = [];
+    expandedScopes.clear(); scopeRows.clear();
     element('logs').textContent = ''; element('scopes').replaceChildren();
     element('summary').textContent = 'Waiting for measurements…';
     element('details').textContent = 'Start an application with diagnostics enabled.';
@@ -76,16 +82,71 @@
     const values = item.values || {};
     element('details').textContent = Object.entries(values)
       .map(([key, value]) => `${key.replaceAll('_', ' ')}: ${value}`).join('\n');
-    element('scopes').replaceChildren();
-    for (const [index, scope] of (item.scopes || []).entries()) {
-      const row = document.createElement('tr');
-      for (const text of [scope.name, scope.self_ms.toFixed(4), scope.total_ms.toFixed(4), scope.calls_per_block.toFixed(1)]) {
-        const cell = document.createElement('td'); cell.textContent = text; row.append(cell);
-      }
-      if (index) row.firstChild.style.paddingLeft = '22px';
-      element('scopes').append(row);
-    }
+    renderScopes();
     draw();
+  }
+
+  function renderScopes() {
+    const table = element('scopes');
+    const nodes = (latest?.scopes || []).map((scope, index) => {
+      // Older recordings only distinguish the whole block from its inner scopes.
+      const parents = scope.parents ?? (index ? [0] : []);
+      return { scope, id: scope.id ?? index, parent: parents.length === 1 ? parents[0] : null,
+               children: [], shared: parents.length > 1 };
+    });
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    for (const node of nodes) {
+      const ancestors = new Set([node.id]);
+      let parent = byId.get(node.parent);
+      while (parent) {
+        if (ancestors.has(parent.id)) { node.parent = null; break; }
+        ancestors.add(parent.id);
+        parent = byId.get(parent.parent);
+      }
+    }
+    const roots = [];
+    for (const node of nodes) {
+      const parent = byId.get(node.parent);
+      if (parent) parent.children.push(node); else roots.push(node);
+    }
+    const ordered = [];
+    function visit(node, depth, visible) {
+      ordered.push({ node, depth, visible });
+      for (const child of node.children) visit(child, depth + 1, visible && expandedScopes.has(node.id));
+    }
+    for (const root of roots) visit(root, 0, true);
+    for (const [index, { node, depth, visible }] of ordered.entries()) {
+      let entry = scopeRows.get(node.id);
+      if (!entry) {
+        const row = document.createElement('tr'), nameCell = document.createElement('td');
+        const control = document.createElement('span'), toggle = document.createElement('button');
+        control.className = 'scope-control'; toggle.className = 'scope-toggle'; toggle.type = 'button';
+        toggle.addEventListener('click', () => {
+          if (expandedScopes.has(node.id)) expandedScopes.delete(node.id); else expandedScopes.add(node.id);
+          renderScopes();
+        });
+        const label = document.createElement('span');
+        control.append(toggle); nameCell.append(control, label); row.append(nameCell);
+        const cells = Array.from({ length: 3 }, () => document.createElement('td'));
+        row.append(...cells);
+        entry = { row, nameCell, toggle, label, cells }; scopeRows.set(node.id, entry);
+      }
+      const expanded = expandedScopes.has(node.id);
+      entry.row.hidden = !visible;
+      entry.nameCell.style.paddingLeft = `${8 + depth * 18}px`;
+      entry.label.textContent = node.scope.name;
+      entry.label.title = node.shared ? 'Timings combined across multiple parents.' : '';
+      entry.toggle.hidden = node.children.length === 0;
+      entry.toggle.textContent = expanded ? '−' : '+';
+      entry.toggle.setAttribute('aria-expanded', String(expanded));
+      entry.toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${node.scope.name}`);
+      [node.scope.self_ms.toFixed(4), node.scope.total_ms.toFixed(4), node.scope.calls_per_block.toFixed(1)]
+        .forEach((text, column) => { entry.cells[column].textContent = text; });
+      if (table.children[index] !== entry.row) table.insertBefore(entry.row, table.children[index] || null);
+    }
+    for (const [id, entry] of scopeRows) {
+      if (!byId.has(id)) { entry.row.remove(); scopeRows.delete(id); }
+    }
   }
 
   function draw() {

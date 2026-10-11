@@ -69,6 +69,14 @@ Config config(const char* name)
     return result;
 }
 
+std::string scopeRecord(const std::string& text, const std::string& name)
+{
+    const auto position = text.rfind("\"name\":\"" + name + "\"");
+    require(position != std::string::npos, "Expected scope is missing");
+    const auto start = text.rfind('{', position);
+    return text.substr(start, text.find('}', position) - start + 1);
+}
+
 void timingAndShutdown()
 {
     std::filesystem::path file;
@@ -92,6 +100,12 @@ void timingAndShutdown()
         }
     }
     const auto text = read(file);
+    require(scopeRecord(text, "callback").find("\"parents\":[]") != std::string::npos,
+            "Whole block should not have a parent");
+    require(scopeRecord(text, "outer").find("\"parents\":[0]") != std::string::npos,
+            "Outer scope lost its block parent");
+    require(scopeRecord(text, "inner").find("\"parents\":[1]") != std::string::npos,
+            "Inner scope was not attached to its actual parent");
     require(number(text, "total_blocks") == 3, "Shutdown lost queued callbacks");
     require(number(text, "over_budget") == 3, "Over-budget callbacks not counted");
     require(number(text, "load") > 100, "Load must not be clamped at 100 percent");
@@ -196,6 +210,73 @@ void invalidAndEmptyBlocks()
     require(number(text, "block_size") == 0 && number(text, "state") == 0,
             "Non-finite values reached JSON output");
 }
+
+void hierarchyAndDepthLimit()
+{
+    auto settings = config("Hierarchy depth test");
+    settings.scopes = { "callback", "one", "two", "three", "four", "five", "six", "seven" };
+    std::filesystem::path file;
+    {
+        Session session(settings);
+        file = session.file();
+        {
+            Block block(session, {});
+            const auto nest = [&](const auto& self, std::size_t id) -> void
+            {
+                Scope scope(block, id);
+                if (id + 1 < maxScopes)
+                    self(self, id + 1);
+                else
+                {
+                    Scope tooDeep(block, 1);
+                    Scope invalidId(block, maxScopes);
+                }
+            };
+            allocationCount = 0;
+            watchAllocations = true;
+            nest(nest, 1);
+            watchAllocations = false;
+            require(allocationCount == 0, "Recording nested parents allocated memory");
+        }
+        // Let both a populated report and an idle report reach the file.
+        std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    }
+    const auto text = read(file);
+    require(number(text, "blocks") == 0, "Idle hierarchy reporting was not exercised");
+    for (std::size_t id = 1; id < maxScopes; ++id)
+    {
+        const auto record = scopeRecord(text, settings.scopes[id]);
+        require(record.find("\"parents\":[" + std::to_string(id - 1) + "]") != std::string::npos,
+                "Nested parent relationships were lost in an idle report");
+    }
+    const auto first = text.find("{\"type\":\"metrics\"");
+    const auto second = text.find("{\"type\":\"metrics\"", first + 1);
+    const auto measured = text.substr(first, second - first);
+    require(number(scopeRecord(measured, "one"), "calls_per_block") == 1,
+            "A scope beyond the nesting limit was recorded");
+    require(number(scopeRecord(measured, "seven"), "calls_per_block") == 1,
+            "The deepest supported scope was not recorded");
+}
+
+void sharedScopeParents()
+{
+    std::filesystem::path file;
+    {
+        Session session(config("Shared scope test"));
+        file = session.file();
+        Block block(session, {});
+        {
+            Scope outer(block, 1);
+            Scope inner(block, 2);
+        }
+        Scope direct(block, 2);
+    }
+    const auto record = scopeRecord(read(file), "inner");
+    require(record.find("\"parents\":[0,1]") != std::string::npos,
+            "Using a scope under two parents lost a parent relationship");
+    require(number(record, "calls_per_block") == 2,
+            "Shared scope timings should still combine both calls");
+}
 } // namespace
 
 int main()
@@ -206,6 +287,8 @@ int main()
         realtimeAndOverflow();
         streamsAndMultipleInstances();
         invalidAndEmptyBlocks();
+        hierarchyAndDepthLimit();
+        sharedScopeParents();
         std::cout << "Diagnostics tests passed" << std::endl;
         return 0;
     }

@@ -13,6 +13,8 @@ python Tools/diagnostics_viewer.py
 ```
 
 Choose a session from the dropdown when several applications are running.
+Block scopes start collapsed. Use the `+` and `−` buttons beside a scope to show
+or hide its children; your choices are kept while that session updates.
 Press Ctrl+C in the terminal to stop the viewer. Add `--terminal` for a terminal
 display, or `--help` to see other options.
 
@@ -75,6 +77,9 @@ block.setValue(0, activeTasks);
 ```
 
 Set scope and value names before processing starts, with up to eight of each.
+The whole block uses one scope slot, leaving seven names for inner scopes.
+At most eight scopes can be active at once, including the whole block; attempts
+to exceed either limit are ignored. Any inner scope can contain further scopes.
 Use one block at a time per session, and end inner scopes before outer scopes.
 Create and destroy sessions outside realtime callbacks; stop callbacks before
 destroying their session.
@@ -98,6 +103,11 @@ block (scope 0): 10 ms total
 
 The 7 ms in `process` already includes the 2 ms in `filter`. Work without its own
 scope counts toward self time. Timings and call counts are averaged per block.
+The viewer uses the recorded parent relationships to display nested scopes.
+Only work instrumented with `diagnostics::Scope` appears as a separate branch.
+If a scope name is used under multiple parents, its combined timings appear at
+the top level. Older recordings show all inner scopes directly under the block;
+rebuild the instrumented application to record the full hierarchy.
 
 **Load** shows how much of a block's time budget was used. A block taking 2 ms
 with a 4 ms budget has 50% load. Above 100% means it took longer than allowed.

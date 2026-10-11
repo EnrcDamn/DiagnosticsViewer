@@ -236,6 +236,7 @@ struct Window
             scopes[i].totalMs += sample.scopes[i].totalMs;
             scopes[i].selfMs += sample.scopes[i].selfMs;
             scopes[i].calls += sample.scopes[i].calls;
+            scopes[i].parents |= sample.scopes[i].parents;
         }
     }
 
@@ -357,7 +358,19 @@ struct Session::Impl
             if (i != 0)
                 output << ',';
             const auto& scope = window.scopes[i];
-            output << "{\"name\":";
+            scopeParents[i] |= scope.parents;
+            output << "{\"id\":" << i << ",\"parents\":[";
+            bool firstParent = true;
+            for (std::size_t parent = 0; parent < config.scopes.size(); ++parent)
+            {
+                if ((scopeParents[i] & (1u << parent)) == 0)
+                    continue;
+                if (!firstParent)
+                    output << ',';
+                output << parent;
+                firstParent = false;
+            }
+            output << "],\"name\":";
             quoted(output, config.scopes[i]);
             output << ",\"self_ms\":" << (window.count ? scope.selfMs / window.count : 0.0)
                    << ",\"total_ms\":" << (window.count ? scope.totalMs / window.count : 0.0)
@@ -430,6 +443,7 @@ struct Session::Impl
     std::size_t seen = 0, overruns = 0;
     double lifetimePeakMs = 0.0;
     BlockInfo lastInfo;
+    std::array<std::uint8_t, maxScopes> scopeParents {};
 };
 
 Session::Session(Config config) : m_impl(std::make_unique<Impl>(std::move(config))) {}
@@ -466,6 +480,8 @@ bool Block::begin(std::size_t id) noexcept
 {
     if (id >= maxScopes || m_depth == m_stack.size())
         return false;
+    if (m_depth != 0)
+        m_sample.scopes[id].parents |= static_cast<std::uint8_t>(1u << m_stack[m_depth - 1].id);
     m_stack[m_depth++] = { id, Clock::now(), 0.0 };
     return true;
 }
