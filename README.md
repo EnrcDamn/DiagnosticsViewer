@@ -52,7 +52,7 @@ assigned IDs in list order, starting at zero.
 diagnostics::Config config;
 config.application = "MyApplication";
 config.scopes = { "block", "process", "filter" }; // IDs 0, 1, 2
-config.values = { "active_tasks" };              // ID 0
+config.values = { "active_tasks" };               // ID  0
 
 diagnostics::Session session(std::move(config));
 ```
@@ -84,6 +84,14 @@ Create and destroy sessions outside realtime callbacks; stop callbacks before
 destroying their session.
 
 ## Read the timings
+
+<p align="center">
+  <img
+    src="img/diagnostics001.png"
+    width="497"
+    style="max-width: 100%; height: auto;"
+  />
+</p>
 
 Scope zero covers the whole block. Other scopes measure work inside it.
 **Total** includes child scopes; **self** subtracts their time. For example:
@@ -120,6 +128,14 @@ The graph shows average and peak (highest) load; the red line marks 100%.S
 cover the latest update. The status bar keeps the session's highest block time
 and total count of over-budget blocks. For audio, this count cannot tell you how
 many device dropouts occurred.
+
+<p align="center">
+  <img
+    src="img/diagnostics002.png"
+    width="497"
+    style="max-width: 100%; height: auto;"
+  />
+</p>
 
 Dropped blocks or logs mean some data is missing. For useful comparisons, use
 the same machine and workload; for audio, keep sample rate and buffer size the same.
