@@ -15,41 +15,12 @@ import webbrowser
 DEFAULT_DIRECTORY = Path(tempfile.gettempdir()) / "Diagnostics"
 
 
-class TailReader:
-    """Read complete JSON lines, retaining a partially written last line."""
-
-    def __init__(self, path):
-        self.path = Path(path)
-        self.stream = self.path.open("rb")
-        self.pending = b""
-        self.header = self._decode(self.stream.readline(65536)) or {}
-        # Limit startup work/memory for a session that has been running for hours.
-        size = self.path.stat().st_size
-        if size > 262144:
-            self.stream.seek(size - 262144)
-            self.stream.readline()
-
-    @staticmethod
-    def _decode(line):
-        try:
-            item = json.loads(line.decode("utf-8", errors="replace"))
-            return item if isinstance(item, dict) else None
-        except (ValueError, UnicodeError):
-            return None
-
-    def poll(self):
-        if self.path.stat().st_size < self.stream.tell():
-            self.stream.seek(0)
-            self.pending = b""
-        self.pending += self.stream.read(65536)
-        lines = self.pending.split(b"\n")
-        self.pending = lines.pop()
-        if len(self.pending) > 262144:
-            self.pending = b""
-        return [item for line in lines if (item := self._decode(line)) is not None]
-
-    def close(self):
-        self.stream.close()
+def decode_record(line):
+    try:
+        item = json.loads(line.decode("utf-8", errors="replace"))
+        return item if isinstance(item, dict) else None
+    except (ValueError, UnicodeError):
+        return None
 
 
 def session_paths(directory):
@@ -62,20 +33,24 @@ def session_paths(directory):
 
 
 def terminal(directory, fixed_file):
-    reader = None
+    current_path = None
+    offset = 0
     waiting = False
     try:
         while True:
-            if reader is None:
+            if current_path is None:
                 paths = [fixed_file] if fixed_file else session_paths(directory)
                 if paths and paths[0].exists():
-                    reader = TailReader(paths[0])
-                    print(f"Following {reader.path}", flush=True)
+                    current_path = paths[0]
+                    offset = 0
+                    print(f"Following {current_path}", flush=True)
                 elif not waiting:
                     print(f"Waiting for a diagnostics session in {directory}", flush=True)
                     waiting = True
-            if reader is not None:
-                for item in reader.poll():
+            if current_path is not None:
+                chunk = read_chunk(current_path, offset)
+                offset = chunk["offset"]
+                for item in chunk["records"]:
                     kind = item.get("type")
                     if kind == "metrics":
                         print(f"{item['time']:8.2f}s  load {item['load']:6.1f}% "
@@ -88,20 +63,16 @@ def terminal(directory, fixed_file):
                         print(f"{item['time']:8.2f}s [{item['level']}] {item['text']}", flush=True)
                     elif kind == "closed":
                         print("Session closed.", flush=True)
-                        reader.close()
                         if fixed_file:
                             return
-                        old_path = reader.path
-                        reader = None
+                        old_path = current_path
+                        current_path = None
                         # Wait for a new instance rather than reopening the old file.
                         while not (paths := session_paths(directory)) or paths[0] == old_path:
                             time.sleep(0.25)
             time.sleep(0.2)
     except KeyboardInterrupt:
         pass
-    finally:
-        if reader is not None:
-            reader.close()
 
 
 def read_chunk(path, offset):
@@ -117,9 +88,15 @@ def read_chunk(path, offset):
             offset = stream.tell()
         stream.seek(offset)
         data = stream.read(65536)
+        # Finish a long record without retaining a separate partial-line buffer.
+        if b"\n" not in data and len(data) == 65536:
+            data += stream.readline(262145 - len(data))
         end = data.rfind(b"\n") + 1
+        if end == 0 and len(data) > 262144:
+            end = len(data)  # Discard an oversized incomplete record and keep polling.
+            data = b""
         records = [item for line in data[:end].splitlines()
-                   if (item := TailReader._decode(line)) is not None]
+                   if (item := decode_record(line)) is not None]
         return {"records": records, "offset": offset + end, "reset": reset}
 
 
@@ -147,7 +124,7 @@ def make_server(directory, fixed_file=None, port=0):
                     sessions = []
                     for path in allowed_paths():
                         with path.open("rb") as stream:
-                            header = TailReader._decode(stream.readline(65536)) or {}
+                            header = decode_record(stream.readline(65536)) or {}
                         sessions.append({"name": path.name, "application": header.get("application"),
                                          "pid": header.get("pid"), "instance": header.get("instance")})
                     self.respond(json.dumps(sessions).encode(), "application/json")

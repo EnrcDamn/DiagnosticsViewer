@@ -152,13 +152,8 @@
       const parent = byId.get(node.parent);
       if (parent) parent.children.push(node); else roots.push(node);
     }
-    const ordered = [];
-    function visit(node, depth, visible) {
-      ordered.push({ node, depth, visible });
-      for (const child of node.children) visit(child, depth + 1, visible && expandedScopes.has(node.id));
-    }
-    for (const root of roots) visit(root, 0, true);
-    for (const [index, { node, depth, visible }] of ordered.entries()) {
+    let index = 0;
+    function renderNode(node, depth, visible) {
       let entry = scopeRows.get(node.id);
       if (!entry) {
         const row = document.createElement('tr'), nameCell = document.createElement('td');
@@ -188,10 +183,14 @@
       entry.toggle.textContent = expanded ? '−' : '+';
       entry.toggle.setAttribute('aria-expanded', String(expanded));
       entry.toggle.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${node.scope.name}`);
-      [node.scope.self_ms.toFixed(4), node.scope.total_ms.toFixed(4), node.scope.calls_per_block.toFixed(1)]
-        .forEach((text, column) => { entry.cells[column].textContent = text; });
+      entry.cells[0].textContent = node.scope.self_ms.toFixed(4);
+      entry.cells[1].textContent = node.scope.total_ms.toFixed(4);
+      entry.cells[2].textContent = node.scope.calls_per_block.toFixed(1);
       if (table.children[index] !== entry.row) table.insertBefore(entry.row, table.children[index] || null);
+      ++index;
+      for (const child of node.children) renderNode(child, depth + 1, visible && expanded);
     }
+    for (const root of roots) renderNode(root, 0, true);
     for (const [id, entry] of scopeRows) {
       if (!byId.has(id)) { entry.row.remove(); scopeRows.delete(id); }
     }

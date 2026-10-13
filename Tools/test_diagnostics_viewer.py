@@ -1,12 +1,15 @@
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
-from diagnostics_viewer import TailReader, make_server, read_chunk, session_paths
+from diagnostics_viewer import make_server, read_chunk, session_paths, terminal
 
 
 SESSION_NAME = "session-2026-10-11_10-00-00.000000-pid-1-instance-2.jsonl"
@@ -21,24 +24,23 @@ class ReaderTests(unittest.TestCase):
     def test_partial_line_and_multiple_writes(self):
         path = self.directory() / SESSION_NAME
         path.write_bytes(b'{"type":"session"}\n{"type":"log","text":"caf')
-        reader = TailReader(path)
-        self.addCleanup(reader.close)
-        self.assertEqual(reader.header["type"], "session")
-        self.assertEqual(reader.poll(), [])
+        chunk = read_chunk(path, 0)
+        self.assertEqual(chunk["records"], [{"type": "session"}])
+        self.assertEqual(read_chunk(path, chunk["offset"])["records"], [])
         with path.open("ab") as output:
             output.write('è"}\ninvalid line\n{"type":"closed"}\n'.encode())
-        self.assertEqual(reader.poll(), [{"type": "log", "text": "cafè"},
-                                         {"type": "closed"}])
+        self.assertEqual(read_chunk(path, chunk["offset"])["records"],
+                         [{"type": "log", "text": "cafè"}, {"type": "closed"}])
 
     def test_truncated_file_recovers(self):
         path = self.directory() / SESSION_NAME
         path.write_text('{"type":"session","application":"a long name"}\n'
                         '{"type":"closed"}\n', encoding="utf-8")
-        reader = TailReader(path)
-        self.addCleanup(reader.close)
-        reader.poll()
+        chunk = read_chunk(path, 0)
         path.write_text('{"type":"log"}\n', encoding="utf-8")
-        self.assertEqual(reader.poll(), [{"type": "log"}])
+        result = read_chunk(path, chunk["offset"])
+        self.assertTrue(result["reset"])
+        self.assertEqual(result["records"], [{"type": "log"}])
 
     def test_large_session_reads_recent_history(self):
         path = self.directory() / SESSION_NAME
@@ -46,13 +48,72 @@ class ReaderTests(unittest.TestCase):
             output.write(b'{"type":"session"}\n')
             for i in range(20000):
                 output.write((json.dumps({"type": "metrics", "sequence": i}) + "\n").encode())
-        reader = TailReader(path)
-        self.addCleanup(reader.close)
         records = []
+        offset = 0
         for _ in range(6):
-            records.extend(reader.poll())
+            chunk = read_chunk(path, offset)
+            records.extend(chunk["records"])
+            offset = chunk["offset"]
         self.assertGreater(records[0]["sequence"], 0)
         self.assertEqual(records[-1]["sequence"], 19999)
+
+    def test_long_records_and_oversized_incomplete_lines(self):
+        path = self.directory() / SESSION_NAME
+        record = {"type": "log", "text": "a" * 70000}
+        data = (json.dumps(record) + "\n").encode()
+        path.write_bytes(data[:-1])
+        self.assertEqual(read_chunk(path, 0)["offset"], 0)
+        with path.open("ab") as output:
+            output.write(b"\n")
+        chunk = read_chunk(path, 0)
+        self.assertEqual(chunk["records"], [record])
+        self.assertEqual(chunk["offset"], len(data))
+
+        path.write_bytes(b'{"type":"session"}\n')
+        start = read_chunk(path, 0)["offset"]
+        with path.open("ab") as output:
+            output.write(b"a" * 300000 + b'\n{"type":"closed"}\n')
+        chunk = read_chunk(path, start)
+        self.assertGreater(chunk["offset"], start)
+        self.assertEqual(read_chunk(path, chunk["offset"])["records"], [{"type": "closed"}])
+
+    def test_terminal_follows_fixed_file(self):
+        directory = self.directory()
+        path = directory / SESSION_NAME
+        records = [
+            {"type": "session", "application": "Test"},
+            {"type": "metrics", "time": 1, "load": 25, "peak_load": 50,
+             "mean_ms": 1, "p99_ms": 2, "peak_ms": 3, "over_budget": 0,
+             "dropped_blocks": 0},
+            {"type": "log", "time": 1, "level": "info", "text": "caffè"},
+            {"type": "closed"},
+        ]
+        path.write_text("".join(json.dumps(item) + "\n" for item in records), encoding="utf-8")
+        output = StringIO()
+        with redirect_stdout(output):
+            terminal(directory, path)
+        self.assertEqual(output.getvalue(),
+                         f"Following {path}\n"
+                         "    1.00s  load   25.0% peak   50.0%  "
+                         "mean/p99/max 1.000/2.000/3.000 ms  over budget 0  dropped 0\n"
+                         "    1.00s [info] caffè\nSession closed.\n")
+
+    def test_terminal_waits_for_new_session_after_close(self):
+        directory = self.directory()
+        first = directory / SESSION_NAME
+        second = directory / SESSION_NAME.replace("instance-2", "instance-3")
+        first.write_text('{"type":"session"}\n{"type":"closed"}\n', encoding="utf-8")
+        second.write_text('{"type":"session"}\n'
+                          '{"type":"log","time":2,"level":"info","text":"New session"}\n'
+                          '{"type":"closed"}\n', encoding="utf-8")
+        output = StringIO()
+        with redirect_stdout(output), patch("diagnostics_viewer.time.sleep"), \
+                patch("diagnostics_viewer.session_paths",
+                      side_effect=[[first], [first], [second], [second], KeyboardInterrupt]):
+            terminal(directory, None)
+        self.assertEqual(output.getvalue(),
+                         f"Following {first}\nSession closed.\nFollowing {second}\n"
+                         "    2.00s [info] New session\nSession closed.\n")
 
     def test_missing_directory(self):
         self.assertEqual(session_paths(Path("does-not-exist")), [])

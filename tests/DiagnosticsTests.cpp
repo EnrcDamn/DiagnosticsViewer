@@ -320,6 +320,7 @@ void scopeLoadsAndIdleReports()
         {
             BlockInfo info;
             info.budgetMs = 8.0;
+            info.values = { 256, 42 };
             Block block(session, info);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(600));
@@ -351,6 +352,8 @@ void scopeLoadsAndIdleReports()
     require(number(unused, "load") == 0 && number(unused, "peak_load") == 0,
             "Unexecuted scope should have zero load");
     require(number(text, "blocks") == 0, "Scope load test must include idle reports");
+    require(number(text, "block_size") == 256 && number(text, "state") == 42,
+            "Idle reports lost the last block's values");
     for (const auto& name : settings.scopes)
     {
         const auto record = scopeRecord(text, name);

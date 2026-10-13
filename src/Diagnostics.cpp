@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <cstdio>
-#include <cstring>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -220,14 +218,11 @@ struct Window
     void add(const Sample& sample)
     {
         ++count;
-        last = sample.info;
         const auto elapsed = sample.scopes[0].totalMs;
-        totalMs += elapsed;
         peakMs = std::max(peakMs, elapsed);
         if (sample.info.budgetMs > 0.0)
         {
             budgetMs += sample.info.budgetMs;
-            peakLoad = std::max(peakLoad, 100.0 * elapsed / sample.info.budgetMs);
             if (elapsed > sample.info.budgetMs)
                 ++overBudget;
         }
@@ -256,8 +251,7 @@ struct Window
     }
 
     std::size_t count = 0, percentileCount = 0, overBudget = 0;
-    double totalMs = 0.0, peakMs = 0.0, budgetMs = 0.0, peakLoad = 0.0;
-    BlockInfo last;
+    double peakMs = 0.0, budgetMs = 0.0;
     std::array<ScopeStats, maxScopes> scopes {};
     std::array<double, maxScopes> scopePeakLoads {};
     std::array<double, percentileCapacity> durations {};
@@ -347,16 +341,17 @@ struct Session::Impl
         seen += window.count;
         overruns += window.overBudget;
         lifetimePeakMs = std::max(lifetimePeakMs, window.peakMs);
+        const auto totalMs = window.scopes[0].totalMs;
         output << "{\"type\":\"metrics\",\"time\":" << time
                << ",\"blocks\":" << window.count << ",\"total_blocks\":" << seen
-               << ",\"mean_ms\":" << (window.count ? window.totalMs / window.count : 0.0)
+               << ",\"mean_ms\":" << (window.count ? totalMs / window.count : 0.0)
                << ",\"p99_ms\":" << window.p99()
                << ",\"p99_samples\":" << window.percentileCount
                << ",\"peak_ms\":" << window.peakMs
                << ",\"lifetime_peak_ms\":" << lifetimePeakMs
                << ",\"load\":" << (window.budgetMs > 0.0
-                                            ? 100.0 * window.totalMs / window.budgetMs : 0.0)
-               << ",\"peak_load\":" << window.peakLoad
+                                            ? 100.0 * totalMs / window.budgetMs : 0.0)
+               << ",\"peak_load\":" << window.scopePeakLoads[0]
                << ",\"over_budget\":" << overruns
                << ",\"dropped_blocks\":" << dropped.load(std::memory_order_relaxed)
                << ",\"dropped_logs\":" << logs->dropped.load(std::memory_order_relaxed)
@@ -366,7 +361,7 @@ struct Session::Impl
             if (i != 0)
                 output << ',';
             quoted(output, config.values[i]);
-            output << ':' << window.last.values[i];
+            output << ':' << lastValues[i];
         }
         output << "},\"scopes\":[";
         for (std::size_t i = 0; i < config.scopes.size(); ++i)
@@ -425,7 +420,7 @@ struct Session::Impl
             for (std::size_t i = 0; i < queueCapacity && pop(sample); ++i)
             {
                 window.add(sample);
-                lastInfo = sample.info;
+                lastValues = sample.info.values;
             }
             Message message;
             for (std::size_t i = 0; i < logCapacity && logs->pop(message); ++i)
@@ -436,7 +431,6 @@ struct Session::Impl
             {
                 report(window, milliseconds(now - started) / 1000.0);
                 window = Window {};
-                window.last = lastInfo;
                 lastReport = now;
                 output.flush();
             }
@@ -461,7 +455,7 @@ struct Session::Impl
     std::thread worker;
     std::size_t seen = 0, overruns = 0;
     double lifetimePeakMs = 0.0;
-    BlockInfo lastInfo;
+    std::array<double, maxValues> lastValues {};
     std::array<std::uint8_t, maxScopes> scopeParents {};
 };
 
